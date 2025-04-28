@@ -12,19 +12,26 @@ echo "Running on node: $(hostname)"
 echo "Starting at: $(date)"
 echo "---------------------------------------"
 
+# Navigate to your project directory
 cd /storage/ice1/6/7/kdaga7/Spanish-Portuguese-Transfer-Learning
 
+# Activate virtual environment
 source .venv/bin/activate
 
+# Show which GPU you're running on
 nvidia-smi
 
+# Step 1: Train the model
+echo "Starting training..."
 python3 train_spanish.py
 
+# Step 2: Evaluate the model immediately after training
+echo "Training complete. Starting evaluation..."
+python3 evaluate_spanish.py
+
+# Step 3: Save model and evaluation outputs
 echo "Zipping model directory..."
 tar -czvf spanish_ocr_model.tar.gz spanish_ocr_model/
-
-echo "Copying model back to laptop..."
-scp spanish_ocr_model.tar.gz Kunal@ipsec-10-2-192-69.local:~/Downloads/
 
 echo "Finished at: $(date)"
 echo "---------------------------------------"

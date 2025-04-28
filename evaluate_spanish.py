@@ -1,90 +1,68 @@
-#!/usr/bin/env python3
 import os
-import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+from torch.utils.data import DataLoader
 from PIL import Image
-from transformers import VisionEncoderDecoderModel, TrOCRProcessor
-import evaluate
 from tqdm import tqdm
+import pandas as pd
+import evaluate
 
-MODEL_DIR   = "./spanish_ocr_model"
-CSV_PATH    = "data/spanish_data.csv"
-IMAGES_DIR  = "data/images/"
-TEST_SIZE   = 0.2
-RANDOM_SEED = 42
-BATCH_SIZE  = 8
-
-GEN_KWARGS = dict(
-    num_beams=5,
-    early_stopping=True,
-    do_sample=False,
-    max_new_tokens=128,
-    length_penalty=0.8,
-    no_repeat_ngram_size=2,
-)
-
-class SpanishEvalDataset(Dataset):
+class SpanishOCRDataset(torch.utils.data.Dataset):
     def __init__(self, dataframe, images_dir, processor):
-        self.df = dataframe.reset_index(drop=True)
+        self.data = dataframe.reset_index(drop=True)
         self.images_dir = images_dir
         self.processor = processor
 
     def __len__(self):
-        return len(self.df)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        img_path = os.path.join(self.images_dir, row["image_path"])
-        text    = row["text"]
+        row = self.data.iloc[idx]
+        img_path = os.path.join(self.images_dir, row['image_path'])
+        text = row['text']
 
         image = Image.open(img_path).convert("RGB")
         pixel_values = self.processor(images=image, return_tensors="pt").pixel_values.squeeze(0)
         return {"pixel_values": pixel_values, "text": text}
 
+def evaluate_model(model_dir="spanish_ocr_model", csv_path="data/spanish_data.csv", images_dir="data/images/"):
+    processor = TrOCRProcessor.from_pretrained(model_dir)
+    model = VisionEncoderDecoderModel.from_pretrained(model_dir)
 
-def normalize(s: str) -> str:
-    return " ".join(s.strip().split())
-
-def main():
-    processor = TrOCRProcessor.from_pretrained(MODEL_DIR)
-    model     = VisionEncoderDecoderModel.from_pretrained(MODEL_DIR)
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    model.to(device)
     model.eval()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else
-                          "mps"   if torch.backends.mps.is_available() else
-                          "cpu")
-    model.to(device)
+    df = pd.read_csv(csv_path)
+    dataset = SpanishOCRDataset(df, images_dir, processor)
+    dataloader = DataLoader(dataset, batch_size=1)
 
-    df = pd.read_csv(CSV_PATH)
-    _, val_df = \
-      __import__("sklearn.model_selection").model_selection.train_test_split(
-        df, test_size=TEST_SIZE, random_state=RANDOM_SEED)
+    preds, refs = [], []
+    with torch.no_grad():
+        for batch in tqdm(dataloader):
+            pixel_values = batch["pixel_values"].to(device)
+            labels = batch["text"]
 
-    val_ds = SpanishEvalDataset(val_df, IMAGES_DIR, processor)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
+            generated_ids = model.generate(pixel_values.unsqueeze(0)) if pixel_values.ndim == 3 else model.generate(pixel_values)
+            pred_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+            preds.append(pred_text)
+            refs.append(labels[0])
 
     cer_metric = evaluate.load("cer")
     wer_metric = evaluate.load("wer")
 
-    for batch in tqdm(val_loader, desc="Evaluating"):
-        pixel_values = batch["pixel_values"].to(device)
-        texts        = batch["text"]
+    cer = cer_metric.compute(predictions=preds, references=refs)
+    wer = wer_metric.compute(predictions=preds, references=refs)
 
-        with torch.no_grad():
-            generated_ids = model.generate(pixel_values, **GEN_KWARGS)
-
-        preds = processor.batch_decode(generated_ids, skip_special_tokens=True)
-        preds = [normalize(p) for p in preds]
-        refs  = [normalize(t) for t in texts]
-
-        cer_metric.add_batch(predictions=preds, references=refs)
-        wer_metric.add_batch(predictions=preds, references=refs)
-
-    cer = cer_metric.compute()
-    wer = wer_metric.compute()
-    print(f"\n→ Final CER: {cer:.4f}")
+    print(f"→ Final CER: {cer:.4f}")
     print(f"→ Final WER: {wer:.4f}")
 
+    # Save metrics into a file
+    with open("evaluation_metrics.txt", "w") as f:
+        f.write(f"Final CER: {cer:.4f}\n")
+        f.write(f"Final WER: {wer:.4f}\n")
+
+
 if __name__ == "__main__":
-    main()
+    evaluate_model()

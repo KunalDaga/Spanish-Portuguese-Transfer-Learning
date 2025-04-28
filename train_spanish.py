@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 from PIL import Image
@@ -11,10 +12,9 @@ from transformers import (
     TrainingArguments,
     TrainerCallback,
 )
+from torchvision import transforms as T
 import evaluate
 from tqdm import tqdm
-from torchvision import transforms as T
-
 
 class SpanishOCRDataset(Dataset):
     def __init__(self, dataframe, images_dir, processor, train=False, max_target_length=128):
@@ -27,7 +27,9 @@ class SpanishOCRDataset(Dataset):
         if self.train:
             self.augmentations = T.Compose([
                 T.RandomRotation(degrees=2),
-                T.ColorJitter(brightness=0.1, contrast=0.1),
+                T.ColorJitter(brightness=0.2, contrast=0.2),
+                T.RandomAffine(degrees=0, translate=(0.02, 0.02)),
+                T.RandomAdjustSharpness(sharpness_factor=2),
             ])
         else:
             self.augmentations = None
@@ -54,11 +56,7 @@ class SpanishOCRDataset(Dataset):
         ).input_ids.squeeze(0)
         labels[labels == self.processor.tokenizer.pad_token_id] = -100
 
-        return {
-            "pixel_values": pixel_values,
-            "labels": labels,
-        }
-
+        return {"pixel_values": pixel_values, "labels": labels}
 
 class TQDMProgressBar(TrainerCallback):
     def __init__(self):
@@ -68,7 +66,7 @@ class TQDMProgressBar(TrainerCallback):
         self.progress_bar = tqdm(total=state.max_steps, desc="Training Progress", dynamic_ncols=True)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if self.progress_bar and logs:
+        if self.progress_bar and logs is not None:
             desc = f"Epoch {int(state.epoch):>2} | Step {state.global_step:>5}"
             if 'loss' in logs:
                 desc += f" | Loss {logs['loss']:.4f}"
@@ -86,30 +84,24 @@ class TQDMProgressBar(TrainerCallback):
         if self.progress_bar:
             self.progress_bar.close()
 
-
 def build_model():
     processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-printed")
     model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else
-                          "mps" if torch.backends.mps.is_available() else
-                          "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device)
 
     model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
     model.config.pad_token_id = processor.tokenizer.pad_token_id
-
     return processor, model, device
 
-
-def build_datasets(processor, test_size=0.2):
+def build_datasets(processor):
     df = pd.read_csv("data/spanish_data.csv")
-    train_df, val_df = train_test_split(df, test_size=test_size, random_state=42)
+    train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
 
     train_dataset = SpanishOCRDataset(train_df, "data/images/", processor, train=True)
     val_dataset = SpanishOCRDataset(val_df, "data/images/", processor, train=False)
     return train_dataset, val_dataset
-
 
 def build_compute_metrics(processor):
     cer_metric = evaluate.load("cer")
@@ -117,12 +109,12 @@ def build_compute_metrics(processor):
 
     def compute_metrics(pred):
         pred_ids = pred.predictions
-        if isinstance(pred_ids, tuple):  # Older HF versions sometimes return a tuple
+        if isinstance(pred_ids, tuple):
             pred_ids = pred_ids[0]
         if pred_ids.ndim == 3:
-            pred_ids = pred_ids.argmax(dim=-1)
+            pred_ids = np.argmax(pred_ids, axis=-1)
 
-        label_ids = torch.tensor(pred.label_ids)
+        label_ids = np.array(pred.label_ids)
         label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
 
         pred_str = processor.batch_decode(pred_ids, skip_special_tokens=True)
@@ -130,11 +122,9 @@ def build_compute_metrics(processor):
 
         cer = cer_metric.compute(predictions=pred_str, references=label_str)
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
-
         return {"cer": cer, "wer": wer}
 
     return compute_metrics
-
 
 def main():
     processor, model, device = build_model()
@@ -143,22 +133,19 @@ def main():
 
     training_args = TrainingArguments(
         output_dir="./spanish_ocr_model",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
-        logging_dir="./logs",
-        save_total_limit=2,
-        learning_rate=1e-5,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        num_train_epochs=50,
+        learning_rate=3e-5,
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
+        num_train_epochs=75,
         weight_decay=0.01,
-        warmup_steps=500,
+        logging_dir="./logs",
+        save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="cer",
         greater_is_better=False,
         report_to="none",
-        generation_max_length=128,
-        generation_num_beams=5,
     )
 
     trainer = Trainer(
@@ -168,13 +155,13 @@ def main():
         eval_dataset=val_dataset,
         compute_metrics=compute_metrics,
         callbacks=[TQDMProgressBar()],
+        tokenizer=processor.feature_extractor,
     )
 
-    trainer.train(resume_from_checkpoint=True)
+    trainer.train()
 
     model.save_pretrained("./spanish_ocr_model")
     processor.save_pretrained("./spanish_ocr_model")
-
 
 if __name__ == "__main__":
     main()
