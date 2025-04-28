@@ -93,7 +93,6 @@ def build_model():
     processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-printed")
     model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed")
 
-    # Set device
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -102,7 +101,6 @@ def build_model():
         device = torch.device("cpu")
     model.to(device)
 
-    # Required for VisionEncoderDecoderModel
     model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
     model.config.pad_token_id = processor.tokenizer.pad_token_id
 
@@ -123,13 +121,11 @@ def build_compute_metrics(processor):
     wer_metric = evaluate.load("wer")
 
     def compute_metrics(pred):
-        # pred.predictions may be logits or generated token IDs
         pred_ids = pred.predictions
         if pred_ids.ndim == 3:  # logits
             pred_ids = pred_ids.argmax(axis=-1)
         label_ids = pred.label_ids
 
-        # Replace -100 in labels as pad token id for decoding
         label_ids = torch.tensor(label_ids)
         label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
 
@@ -147,7 +143,7 @@ def main():
     # Training arguments with improved settings
     training_args = TrainingArguments(
         output_dir="./spanish_ocr_model",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         logging_dir="./logs",
         save_total_limit=2,

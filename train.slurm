@@ -7,19 +7,24 @@
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm-%j.out
 
+echo "---------------------------------------"
 echo "Running on node: $(hostname)"
 echo "Starting at: $(date)"
+echo "---------------------------------------"
 
-# Change to your project directory
 cd /storage/ice1/6/7/kdaga7/Spanish-Portuguese-Transfer-Learning
 
-# Activate the pre-built virtual environment
 source .venv/bin/activate
 
-# Check that GPU is visible
 nvidia-smi
 
-# jupyter nbconvert --execute --to notebook --inplace model.ipynb --ExecutePreprocessor.timeout=-1
 python3 train_spanish.py
 
+echo "Zipping model directory..."
+tar -czvf spanish_ocr_model.tar.gz spanish_ocr_model/
+
+echo "Copying model back to laptop..."
+scp spanish_ocr_model.tar.gz Kunal@ipsec-10-2-192-69.local:~/Downloads/
+
 echo "Finished at: $(date)"
+echo "---------------------------------------"
