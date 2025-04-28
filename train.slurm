@@ -19,7 +19,7 @@ source .venv/bin/activate
 # Check that GPU is visible
 nvidia-smi
 
-# Run your notebook (allow infinite execution time)
-jupyter nbconvert --execute --to notebook --inplace model.ipynb --ExecutePreprocessor.timeout=-1
+# jupyter nbconvert --execute --to notebook --inplace model.ipynb --ExecutePreprocessor.timeout=-1
+python3 train_spanish.py
 
 echo "Finished at: $(date)"

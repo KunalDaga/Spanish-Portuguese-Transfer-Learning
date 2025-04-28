@@ -3,7 +3,6 @@
  - `data/` contains data used
  - `model.ipynb` used to train and infer
 
-
  # Steps
  1. ssh into pace-ice cluster
  2. cd ~/scratc
